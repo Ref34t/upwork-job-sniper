@@ -1,48 +1,54 @@
-"""Application configuration settings."""
+"""Application settings and configuration."""
 import os
 from pathlib import Path
 from typing import Optional
 
-from pydantic import BaseSettings, Field, validator
-from pydantic.types import SecretStr
+from pydantic import Field, SecretStr, validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """Application settings."""
+    """Application settings loaded from environment variables."""
     
-    # Application
-    APP_NAME: str = "Upwork Job Sniper"
-    DEBUG: bool = False
-    LOG_LEVEL: str = "INFO"
+    # Application settings
+    APP_NAME: str = Field(default="Upwork Job Sniper")
+    DEBUG: bool = Field(default=False)
+    LOG_LEVEL: str = Field(default="INFO")
     
-    # Upwork API
+    # Upwork API settings
     UPWORK_API_KEY: str
     UPWORK_API_SECRET: str
-    UPWORK_ACCESS_TOKEN: Optional[str] = None
-    UPWORK_ACCESS_TOKEN_SECRET: Optional[str] = None
+    UPWORK_ACCESS_TOKEN: str
+    UPWORK_ACCESS_TOKEN_REFRESH: str
+    UPWORK_ORGANIZATION_ID: str
     
-    # OpenAI
+    # API Endpoints
+    UPWORK_GRAPHQL_ENDPOINT: str = "https://api.upwork.com/graphql"
+    
+    # OpenAI API settings
     OPENAI_API_KEY: SecretStr
     
-    # Pushover
+    # Pushover settings
     PUSHOVER_API_TOKEN: Optional[str] = None
     PUSHOVER_USER_KEY: Optional[str] = None
     
-    # Application Settings
+    # Application settings
     POLLING_INTERVAL: int = 300  # 5 minutes in seconds
     MAX_RETRIES: int = 3
     
-    # File Paths
+    # File paths
     BASE_DIR: Path = Path(__file__).parent.parent
     DATA_DIR: Path = BASE_DIR / "data"
     LOGS_DIR: Path = BASE_DIR / "logs"
     
-    class Config:
-        """Pydantic config."""
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        case_sensitive = True
-    
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=True,
+        env_nested_delimiter="__",
+        extra="ignore"
+    )
+
     @validator("DATA_DIR", "LOGS_DIR", pre=True)
     def create_dirs(cls, v: Path) -> Path:
         """Create directories if they don't exist."""
