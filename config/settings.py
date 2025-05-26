@@ -33,8 +33,24 @@ class Settings(BaseSettings):
     PUSHOVER_USER_KEY: Optional[str] = None
     
     # Application settings
-    POLLING_INTERVAL: int = 900  # 15 minutes between checks
+    POLLING_INTERVAL: int = 300  # 5 minutes between checks (for each query)
     MAX_RETRIES: int = 3
+    
+    # Search configurations
+    SEARCH_QUERIES: list[dict] = [
+        {
+            "query": "wordpress",
+            "hourly_rate_min": 30,
+            "budget_min": 500,
+            "limit": 10
+        },
+        {
+            "query": "ai",
+            "hourly_rate_min": 40,
+            "budget_min": 1000,
+            "limit": 10
+        }
+    ]
     
     # File paths
     BASE_DIR: Path = Path(__file__).parent.parent

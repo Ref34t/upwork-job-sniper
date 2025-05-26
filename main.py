@@ -84,6 +84,11 @@ class UpworkJobSniper:
         self.job_tracker = JobTracker(settings.DATA_DIR)
         self.notifier = PushoverNotifier()
         self.setup_signal_handlers()
+        self.current_query_index = 0
+        
+        # Validate search queries
+        if not hasattr(settings, 'SEARCH_QUERIES') or not settings.SEARCH_QUERIES:
+            logger.warning("No search queries configured in settings.SEARCH_QUERIES")
         
         # Log notification status
         if self.notifier.is_configured():
@@ -180,6 +185,36 @@ class UpworkJobSniper:
         except Exception as e:
             logger.exception(f"Failed to process job {job_id}")
     
+    async def run_search(self, search_config: dict) -> int:
+        """Run a single search with the given configuration."""
+        try:
+            logger.info(f"Searching for: {search_config['query']} (${search_config['hourly_rate_min']}/hr, ${search_config['budget_min']} min)")
+            
+            jobs = self.upwork.search_jobs(
+                query=search_config['query'],
+                hourly_rate_min=search_config['hourly_rate_min'],
+                budget_min=search_config['budget_min'],
+                limit=search_config.get('limit', 10)
+            )
+            
+            # Process new jobs
+            new_jobs = 0
+            for job in jobs:
+                job_id = job.get('id')
+                if job_id and self.job_tracker.is_new_job(job_id):
+                    await self.process_job(job)
+                    new_jobs += 1
+            
+            logger.info(f"Found {len(jobs)} jobs, {new_jobs} new for query: {search_config['query']}")
+            return new_jobs
+            
+        except UpworkAuthenticationError as e:
+            logger.error(f"Authentication error: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Error during job search for {search_config['query']}: {e}", exc_info=True)
+            return 0
+    
     async def run(self):
         """Run the main application loop."""
         logger.info("Starting Upwork Job Sniper...")
@@ -187,36 +222,27 @@ class UpworkJobSniper:
         # No explicit connection needed for GraphQL client
         logger.info("Upwork GraphQL client initialized")
         
+        if not hasattr(settings, 'SEARCH_QUERIES') or not settings.SEARCH_QUERIES:
+            logger.error("No search queries configured. Please set SEARCH_QUERIES in settings.")
+            return
+        
         try:
             # Main application loop
             while not self.should_exit:
-                logger.info("Checking for new jobs...")
+                # Get the current search config
+                search_config = settings.SEARCH_QUERIES[self.current_query_index]
                 
                 try:
-                    # Search for WordPress jobs with minimum hourly rate of $30 and minimum budget of $500
-                    jobs = self.upwork.search_jobs(
-                        query="wordpress",
-                        hourly_rate_min=30,  # $30/hr minimum
-                        budget_min=500,  # $500 minimum budget
-                        limit=10
-                    )
+                    await self.run_search(search_config)
                     
-                    # Process new jobs
-                    new_jobs = 0
-                    for job in jobs:
-                        job_id = job.get('id')
-                        if job_id and self.job_tracker.is_new_job(job_id):
-                            await self.process_job(job)  # Pass the job data to process
-                            new_jobs += 1
+                    # Move to the next query for the next iteration
+                    self.current_query_index = (self.current_query_index + 1) % len(settings.SEARCH_QUERIES)
                     
-                    logger.info(f"Found {len(jobs)} jobs, {new_jobs} new")
-                    
-                except UpworkAuthenticationError as e:
-                    logger.error(f"Authentication error: {e}")
+                except UpworkAuthenticationError:
                     # Don't retry immediately on auth errors
                     break
                 except Exception as e:
-                    logger.error(f"Error during job search: {e}", exc_info=True)
+                    logger.error(f"Unexpected error: {e}", exc_info=True)
                 
                 # Wait before next poll
                 logger.info(f"Waiting {settings.POLLING_INTERVAL} seconds before next check...")
