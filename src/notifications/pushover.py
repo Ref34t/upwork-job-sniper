@@ -347,7 +347,7 @@ class PushoverNotifier:
             if job_id and job_id != 'unknown':
                 job_url = f"https://www.upwork.com/jobs/~02{job_id}"
             
-            # Send the notification
+            # Send the notification to all devices
             return self.send_notification(
                 title="🚀 New Job Match!",
                 message="\n".join(message_parts),
@@ -355,7 +355,9 @@ class PushoverNotifier:
                 url_title="🔍 View on Upwork" if job_url else None,
                 priority=1,  # High priority
                 sound="cashregister",  # Fun cash register sound for new jobs
-                html=1  # Enable HTML formatting
+                html=1,  # Enable HTML formatting
+                retry=30,  # Retry every 30 seconds if not acknowledged
+                expire=300  # Stop retrying after 5 minutes
             )
             
         except Exception as e:
