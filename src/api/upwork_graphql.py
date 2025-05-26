@@ -140,56 +140,59 @@ class UpworkGraphQLClient:
         Raises:
             UpworkAPIError: If there's an error with the API request
         """
-        graphql_query = """
-        query SearchJobs($filter: MarketPlaceJobFilterInput!, $searchType: MarketPlaceJobSearchType!, $sort: [MarketPlaceJobSortInput!]) {
+        # Build the query with inline arguments
+        graphql_query = f"""
+        query {{
           marketplaceJobPostingsSearch(
-            marketPlaceJobFilter: $filter
-            searchType: $searchType
-            sortAttributes: $sort
-          ) {
-            edges {
-              node {
+            marketPlaceJobFilter: {{
+              titleExpression_eq: "{query}"
+              hourlyRate_eq: {{rangeStart: {hourly_rate_min}}}
+              pagination_eq: {{first: {min(limit, 100)}, after: "0"}}
+            }}
+            searchType: USER_JOBS_SEARCH
+            sortAttributes: [{{field: RECENCY}}]
+          ) {{
+            edges {{
+              node {{
+                ciphertext
                 id
                 title
                 description
-                hourlyBudgetMin {
+                hourlyBudgetMin {{
                   displayValue
-                }
-                hourlyBudgetMax {
+                }}
+                hourlyBudgetMax {{
                   displayValue
-                }
+                }}
                 createdDateTime
                 duration
                 experienceLevel
-                amount {
+                amount {{
                   displayValue
-                }
-                client {
+                }}
+                client {{
                   totalReviews
                   totalFeedback
                   verificationStatus
                   totalPostedJobs
                   totalHires
-                  totalSpent {
+                  totalSpent {{
                     displayValue
-                  }
-                }
+                  }}
+                }}
                 totalApplicants
-              }
-            }
-          }
-        }
+              }}
+            }}
+            pageInfo {{
+              hasNextPage
+              endCursor
+            }}
+          }}
+        }}
         """
         
-        variables = {
-            "filter": {
-                "titleExpression": {"eq": query},
-                "hourlyRateMin": {"gte": hourly_rate_min}
-            },
-            "limit": min(limit, 100),  # Ensure we don't exceed API limits
-            "searchType": "USER_JOBS_SEARCH",
-            "sort": [{"field": "RECENCY"}]
-        }
+        # No variables needed since we're using string interpolation
+        variables = {}
         
         try:
             logger.info(f"Searching for jobs with query: {query}, min rate: ${hourly_rate_min}/hr")
@@ -203,8 +206,11 @@ class UpworkGraphQLClient:
             search_result = result.get('data', {}).get('marketplaceJobPostingsSearch', {})
             edges = search_result.get('edges', [])
             
-            logger.info(f"Found {len(edges)} jobs matching the criteria")
-            return [edge['node'] for edge in edges if 'node' in edge]
+            # Extract nodes from edges
+            jobs = [edge.get('node', {}) for edge in edges if edge and 'node' in edge]
+            
+            logger.info(f"Found {len(jobs)} jobs matching the criteria")
+            return jobs
             
         except UpworkAuthenticationError as e:
             logger.error(f"Authentication error while searching jobs: {e}")

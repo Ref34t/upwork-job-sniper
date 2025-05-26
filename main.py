@@ -95,28 +95,41 @@ class UpworkJobSniper:
     
     def _format_job_details(self, job: Dict[str, Any]) -> str:
         """Format job details for logging and display."""
-        client = job.get('client', {})
+        if not job:
+            return "No job details available"
+            
+        lines = []
         
-        lines = [
-            f"Title: {job.get('title', 'N/A')}",
-            f"Posted: {job.get('createdDateTime', 'N/A')}",
-            f"Experience: {job.get('experienceLevel', 'N/A')}",
-            f"Applicants: {job.get('totalApplicants', 0)}",
-        ]
+        # Safely extract client information
+        client = job.get('client') or {}
         
-        # Add budget information if available
-        if 'hourlyBudgetMin' in job and job['hourlyBudgetMin']:
-            min_rate = job['hourlyBudgetMin'].get('displayValue', 'N/A')
-            max_rate = job['hourlyBudgetMax'].get('displayValue', 'N/A') if 'hourlyBudgetMax' in job else 'N/A'
+        # Add job title and ID
+        lines.append(f"Title: {job.get('title', 'N/A')} (ID: {job.get('id', 'N/A')})")
+        
+        # Add job description (first 200 chars)
+        description = job.get('description', '')
+        if description:
+            desc = (description[:200] + '...') if len(description) > 200 else description
+            lines.append(f"Description: {desc}")
+        
+        # Add budget information
+        hourly_min = job.get('hourlyBudgetMin', {}) or {}
+        hourly_max = job.get('hourlyBudgetMax', {}) or {}
+        amount = job.get('amount', {}) or {}
+        
+        if hourly_min.get('displayValue') and hourly_max.get('displayValue'):
+            min_rate = hourly_min.get('displayValue', 'N/A')
+            max_rate = hourly_max.get('displayValue', 'N/A')
             lines.append(f"Hourly Rate: {min_rate} - {max_rate}")
-        elif 'amount' in job and job['amount']:
-            lines.append(f"Budget: {job['amount'].get('displayValue', 'N/A')}")
+        elif amount.get('displayValue'):
+            lines.append(f"Budget: {amount.get('displayValue', 'N/A')}")
         
         # Add client information if available
         if client:
+            total_spent = (client.get('totalSpent') or {}).get('displayValue', 'N/A')
             client_info = [
                 f"Client: {client.get('totalReviews', 0)} reviews",
-                f"Spent: {client.get('totalSpent', {}).get('displayValue', 'N/A')}",
+                f"Spent: {total_spent}",
                 f"Hires: {client.get('totalHires', 'N/A')}",
                 f"Verification: {client.get('verificationStatus', 'N/A')}"
             ]
@@ -130,14 +143,12 @@ class UpworkJobSniper:
         job_id = job.get('id')
         
         if not job_id:
-            logger.warning("Received job with no ID, skipping...")
+            logger.warning("Job missing ID, skipping")
             return
-            
+        
         try:
-            # Get full job details if we don't have them already
-            if 'description' not in job:
-                job_details = self.upwork.get_job_details(job_id)
-                job = job_details.get('data', {}).get('job', {})
+            # Mark job as seen first to avoid duplicates if processing fails
+            self.job_tracker.mark_job_seen(job_id)
             
             # Log the job details
             logger.info(f"Found new job: {job.get('title')} (ID: {job_id})")
@@ -145,14 +156,14 @@ class UpworkJobSniper:
             
             # TODO: Add job processing logic here
             # 1. Score the job
-            # 2. Generate summary using AI
-            # 3. Send notification
+            # 2. Generate summary
+            # 3. Send notification if score is above threshold
             
-            # Mark job as processed
-            self.job_tracker.mark_job_seen(job_id)
+            # For now, just log that we processed the job
+            logger.debug(f"Processed job {job_id}")
             
         except Exception as e:
-            logger.error(f"Failed to process job {job_id}: {e}", exc=True)
+            logger.exception(f"Failed to process job {job_id}")
     
     async def run(self):
         """Run the main application loop."""
@@ -168,27 +179,21 @@ class UpworkJobSniper:
                 
                 try:
                     # Search for jobs using GraphQL
-                    search_results = self.upwork.search_jobs(
-                        title_expression="python",  # TODO: Make this configurable
+                    jobs = self.upwork.search_jobs(
+                        query="python",  # TODO: Make this configurable
                         hourly_rate_min=30,  # $30/hr minimum
-                        budget_min=500,  # $500 minimum for fixed-price jobs
                         limit=10
                     )
                     
-                    # Extract jobs from GraphQL response
-                    jobs_data = search_results.get('data', {}).get('marketplaceJobPostingsSearch', {})
-                    edges = jobs_data.get('edges', [])
-                    
                     # Process new jobs
                     new_jobs = 0
-                    for edge in edges:
-                        job = edge.get('node', {})
+                    for job in jobs:
                         job_id = job.get('id')
                         if job_id and self.job_tracker.is_new_job(job_id):
-                            await self.process_job(edge)  # Pass the edge to get access to cursor if needed
+                            await self.process_job(job)  # Pass the job data to process
                             new_jobs += 1
                     
-                    logger.info(f"Found {len(edges)} jobs, {new_jobs} new")
+                    logger.info(f"Found {len(jobs)} jobs, {new_jobs} new")
                     
                 except UpworkAuthenticationError as e:
                     logger.error(f"Authentication error: {e}")
