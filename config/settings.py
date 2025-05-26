@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     PUSHOVER_USER_KEY: Optional[str] = None
     
     # Application settings
-    POLLING_INTERVAL: int = 300  # 5 minutes in seconds
+    POLLING_INTERVAL: int = 900  # 15 minutes between checks
     MAX_RETRIES: int = 3
     
     # File paths

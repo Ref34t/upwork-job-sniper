@@ -126,12 +126,13 @@ class UpworkGraphQLClient:
         result = self.execute_query(query)
         return result.get('data', {}).get('organization', {})
         
-    def search_jobs(self, query: str, hourly_rate_min: int = 30, limit: int = 10) -> List[Dict]:
+    def search_jobs(self, query: str, hourly_rate_min: int = 30, budget_min: int = 500, limit: int = 10) -> List[Dict]:
         """Search for jobs on Upwork using the GraphQL API.
         
         Args:
             query: Search query string (e.g., "wordpress")
             hourly_rate_min: Minimum hourly rate to filter by (default: 30)
+            budget_min: Minimum fixed-price budget (default: 500)
             limit: Maximum number of results to return (default: 10, max: 100)
             
         Returns:
@@ -146,7 +147,8 @@ class UpworkGraphQLClient:
           marketplaceJobPostingsSearch(
             marketPlaceJobFilter: {{
               titleExpression_eq: "{query}"
-              hourlyRate_eq: {{rangeStart: {hourly_rate_min}}}
+              hourlyRate_eq: {{rangeStart: {hourly_rate_min}}}  # Minimum hourly rate
+              budgetRange_eq: {{rangeStart: {budget_min}}}  # Minimum fixed-price budget
               pagination_eq: {{first: {min(limit, 100)}, after: "0"}}
             }}
             searchType: USER_JOBS_SEARCH
@@ -198,16 +200,12 @@ class UpworkGraphQLClient:
             logger.info(f"Searching for jobs with query: {query}, min rate: ${hourly_rate_min}/hr")
             result = self._execute_query(graphql_query, variables)
             
-            # Handle empty or malformed response
-            if not result or 'data' not in result:
-                logger.warning("Unexpected response format from API")
-                return []
-                
-            search_result = result.get('data', {}).get('marketplaceJobPostingsSearch', {})
-            edges = search_result.get('edges', [])
-            
-            # Extract nodes from edges
+            # Extract job nodes from the response and sort by creation date (newest first)
+            edges = result.get('data', {}).get('marketplaceJobPostingsSearch', {}).get('edges', [])
             jobs = [edge.get('node', {}) for edge in edges if edge and 'node' in edge]
+            
+            # Sort jobs by creation date in descending order (newest first)
+            jobs.sort(key=lambda x: x.get('createdDateTime', ''), reverse=True)
             
             logger.info(f"Found {len(jobs)} jobs matching the criteria")
             return jobs

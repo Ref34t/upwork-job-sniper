@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 
 from config import settings
 from src.api.upwork_graphql import UpworkGraphQLClient, UpworkAuthenticationError, UpworkAPIError
+from src.notifications import PushoverNotifier
 
 # Configure logging
 logging.basicConfig(
@@ -81,7 +82,14 @@ class UpworkJobSniper:
         self.should_exit = False
         self.upwork = UpworkGraphQLClient()
         self.job_tracker = JobTracker(settings.DATA_DIR)
+        self.notifier = PushoverNotifier()
         self.setup_signal_handlers()
+        
+        # Log notification status
+        if self.notifier.is_configured():
+            logger.info("Pushover notifications are enabled")
+        else:
+            logger.warning("Pushover notifications are not configured. Set PUSHOVER_API_TOKEN and PUSHOVER_USER_KEY in .env to enable.")
     
     def setup_signal_handlers(self):
         """Set up signal handlers for graceful shutdown."""
@@ -159,8 +167,15 @@ class UpworkJobSniper:
             # 2. Generate summary
             # 3. Send notification if score is above threshold
             
-            # For now, just log that we processed the job
-            logger.debug(f"Processed job {job_id}")
+            # Send notification for the new job
+            if self.notifier.is_configured():
+                success = self.notifier.send_job_notification(job)
+                if success:
+                    logger.info(f"Sent notification for job {job_id}")
+                else:
+                    logger.warning(f"Failed to send notification for job {job_id}")
+            else:
+                logger.debug(f"Processed job {job_id} (notifications not configured)")
             
         except Exception as e:
             logger.exception(f"Failed to process job {job_id}")
@@ -178,10 +193,11 @@ class UpworkJobSniper:
                 logger.info("Checking for new jobs...")
                 
                 try:
-                    # Search for jobs using GraphQL
+                    # Search for WordPress jobs with minimum hourly rate of $30 and minimum budget of $500
                     jobs = self.upwork.search_jobs(
-                        query="python",  # TODO: Make this configurable
+                        query="wordpress",
                         hourly_rate_min=30,  # $30/hr minimum
+                        budget_min=500,  # $500 minimum budget
                         limit=10
                     )
                     
