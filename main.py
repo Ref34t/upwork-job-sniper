@@ -5,16 +5,20 @@ Upwork Job Sniper - Main Application
 This script serves as the entry point for the Upwork Job Sniper application.
 It initializes the application and starts the job monitoring process.
 """
-
 import asyncio
 import logging
 import signal
+import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Any
 
 import orjson
 from dotenv import load_dotenv
+
+# Add project root to path
+sys.path.append(str(Path(__file__).parent.parent))
 
 from config import settings
 from src.api.upwork_graphql import UpworkGraphQLClient, UpworkAuthenticationError, UpworkAPIError
@@ -40,27 +44,58 @@ class JobTracker:
     def __init__(self, data_dir: Path):
         """Initialize the job tracker."""
         self.data_dir = data_dir
+        self.data_dir.mkdir(parents=True, exist_ok=True)  # Ensure directory exists
         self.seen_jobs_file = data_dir / "seen_jobs.json"
         self.seen_job_ids: Set[str] = set()
         self._load_seen_jobs()
+        logger.info(f"JobTracker initialized with {len(self.seen_job_ids)} seen job(s)")
     
     def _load_seen_jobs(self) -> None:
         """Load seen job IDs from file."""
-        if self.seen_jobs_file.exists():
-            try:
-                with open(self.seen_jobs_file, 'rb') as f:
-                    data = orjson.loads(f.read())
-                    self.seen_job_ids = set(data.get("seen_job_ids", []))
-                logger.info(f"Loaded {len(self.seen_job_ids)} seen job IDs from disk")
-            except Exception as e:
-                logger.error(f"Failed to load seen jobs: {e}")
+        if not self.seen_jobs_file.exists():
+            logger.info("No existing seen jobs file found, starting fresh")
+            return
+            
+        try:
+            with open(self.seen_jobs_file, 'rb') as f:
+                data = orjson.loads(f.read())
+                loaded_ids = data.get("seen_job_ids", [])
+                if not isinstance(loaded_ids, list):
+                    raise ValueError("Invalid format in seen_jobs.json")
+                    
+                self.seen_job_ids = set(loaded_ids)
+                logger.info(f"Successfully loaded {len(self.seen_job_ids)} seen job IDs from {self.seen_jobs_file}")
+                
+        except orjson.JSONDecodeError as e:
+            logger.error(f"Error decoding JSON from {self.seen_jobs_file}: {e}")
+            # Keep existing seen_job_ids (empty set if first run)
+        except Exception as e:
+            logger.error(f"Failed to load seen jobs: {e}", exc_info=True)
     
     def is_new_job(self, job_id: str) -> bool:
         """Check if a job ID has been seen before."""
-        return job_id not in self.seen_job_ids
+        if not job_id:
+            logger.warning("Empty job ID provided to is_new_job")
+            return False
+            
+        is_new = job_id not in self.seen_job_ids
+        if is_new:
+            logger.debug(f"Job {job_id} is new")
+        else:
+            logger.debug(f"Job {job_id} has been seen before")
+        return is_new
     
     def mark_job_seen(self, job_id: str) -> None:
-        """Mark a job ID as seen."""
+        """Mark a job ID as seen and persist to disk."""
+        if not job_id:
+            logger.warning("Attempted to mark empty job ID as seen")
+            return
+            
+        if job_id in self.seen_job_ids:
+            logger.debug(f"Job {job_id} was already marked as seen")
+            return
+            
+        logger.info(f"Marking job {job_id} as seen")
         self.seen_job_ids.add(job_id)
         self._save_seen_jobs()
     
@@ -68,10 +103,31 @@ class JobTracker:
         """Save seen job IDs to file."""
         try:
             data = {"seen_job_ids": list(self.seen_job_ids)}
-            with open(self.seen_jobs_file, 'wb') as f:
+            temp_file = self.seen_jobs_file.with_suffix('.tmp')
+            
+            # Write to a temporary file first
+            with open(temp_file, 'wb') as f:
                 f.write(orjson.dumps(data, option=orjson.OPT_INDENT_2))
+            
+            # Atomically replace the old file
+            if sys.platform == 'win32':
+                # On Windows, we can't do atomic replace, so we'll just overwrite
+                if self.seen_jobs_file.exists():
+                    self.seen_jobs_file.unlink()
+                temp_file.rename(self.seen_jobs_file)
+            else:
+                # On Unix-like systems, we can do an atomic replace
+                temp_file.replace(self.seen_jobs_file)
+                
+            logger.debug(f"Saved {len(self.seen_job_ids)} seen job IDs to {self.seen_jobs_file}")
+            
         except Exception as e:
-            logger.error(f"Failed to save seen jobs: {e}")
+            logger.error(f"Failed to save seen jobs: {e}", exc_info=True)
+            if temp_file.exists():
+                try:
+                    temp_file.unlink()
+                except Exception:
+                    pass
 
 
 class UpworkJobSniper:
@@ -84,11 +140,6 @@ class UpworkJobSniper:
         self.job_tracker = JobTracker(settings.DATA_DIR)
         self.notifier = PushoverNotifier()
         self.setup_signal_handlers()
-        self.current_query_index = 0
-        
-        # Validate search queries
-        if not hasattr(settings, 'SEARCH_QUERIES') or not settings.SEARCH_QUERIES:
-            logger.warning("No search queries configured in settings.SEARCH_QUERIES")
         
         # Log notification status
         if self.notifier.is_configured():
@@ -159,23 +210,22 @@ class UpworkJobSniper:
             logger.warning("Job missing ID, skipping")
             return
         
+        # Log the job details
+        logger.info(f"Found new job: {job.get('title')} (ID: {job_id})")
+        logger.debug(f"Job details:\n{self._format_job_details(job)}")
+        
+        notification_sent = False
+        
         try:
-            # Mark job as seen first to avoid duplicates if processing fails
-            self.job_tracker.mark_job_seen(job_id)
-            
-            # Log the job details
-            logger.info(f"Found new job: {job.get('title')} (ID: {job_id})")
-            logger.debug(f"Job details:\n{self._format_job_details(job)}")
-            
             # TODO: Add job processing logic here
             # 1. Score the job
             # 2. Generate summary
             # 3. Send notification if score is above threshold
             
-            # Send notification for the new job
+            # Send notification for the new job if notifier is configured
             if self.notifier.is_configured():
-                success = self.notifier.send_job_notification(job)
-                if success:
+                notification_sent = self.notifier.send_job_notification(job)
+                if notification_sent:
                     logger.info(f"Sent notification for job {job_id}")
                 else:
                     logger.warning(f"Failed to send notification for job {job_id}")
@@ -183,13 +233,22 @@ class UpworkJobSniper:
                 logger.debug(f"Processed job {job_id} (notifications not configured)")
             
         except Exception as e:
-            logger.exception(f"Failed to process job {job_id}")
+            logger.exception(f"Error processing job {job_id}: {e}")
+        finally:
+            # Always mark the job as seen, even if there was an error
+            # This prevents getting stuck on the same job if there are persistent issues
+            try:
+                self.job_tracker.mark_job_seen(job_id)
+                logger.debug(f"Marked job {job_id} as seen")
+            except Exception as e:
+                logger.exception(f"Failed to mark job {job_id} as seen: {e}")
     
     async def run_search(self, search_config: dict) -> int:
         """Run a single search with the given configuration."""
         try:
             logger.info(f"Searching for: {search_config['query']} (${search_config['hourly_rate_min']}/hr, ${search_config['budget_min']} min)")
             
+            # Get jobs from Upwork
             jobs = self.upwork.search_jobs(
                 query=search_config['query'],
                 hourly_rate_min=search_config['hourly_rate_min'],
@@ -197,13 +256,33 @@ class UpworkJobSniper:
                 limit=search_config.get('limit', 10)
             )
             
-            # Process new jobs
+            # Process new jobs one at a time
             new_jobs = 0
+            processed_jobs = 0
+            
             for job in jobs:
+                if self.should_exit:
+                    break
+                    
                 job_id = job.get('id')
-                if job_id and self.job_tracker.is_new_job(job_id):
+                if not job_id:
+                    logger.warning("Skipping job with missing ID")
+                    continue
+                
+                # Process one job at a time
+                if self.job_tracker.is_new_job(job_id):
+                    logger.debug(f"Processing new job: {job_id}")
                     await self.process_job(job)
                     new_jobs += 1
+                else:
+                    logger.debug(f"Skipping seen job: {job_id}")
+                
+                processed_jobs += 1
+                if processed_jobs >= search_config.get('limit', 10):
+                    break
+                
+                # Small delay between jobs
+                await asyncio.sleep(1)
             
             logger.info(f"Found {len(jobs)} jobs, {new_jobs} new for query: {search_config['query']}")
             return new_jobs
@@ -222,34 +301,48 @@ class UpworkJobSniper:
         # No explicit connection needed for GraphQL client
         logger.info("Upwork GraphQL client initialized")
         
-        if not hasattr(settings, 'SEARCH_QUERIES') or not settings.SEARCH_QUERIES:
-            logger.error("No search queries configured. Please set SEARCH_QUERIES in settings.")
-            return
+        # 10 minutes in seconds
+        SEARCH_INTERVAL = 10 * 60
         
         try:
-            # Main application loop
             while not self.should_exit:
-                # Get the current search config
-                search_config = settings.SEARCH_QUERIES[self.current_query_index]
+                logger.info(f"Searching for '{settings.SEARCH_QUERY}' jobs (${settings.HOURLY_RATE_MIN}+/hr, ${settings.BUDGET_MIN}+ budget)...")
                 
                 try:
-                    await self.run_search(search_config)
+                    # Search with configured parameters
+                    jobs = self.upwork.search_jobs(
+                        query=settings.SEARCH_QUERY,
+                        hourly_rate_min=settings.HOURLY_RATE_MIN,
+                        budget_min=settings.BUDGET_MIN,
+                        limit=settings.SEARCH_LIMIT
+                    )
+                    logger.info(f"Found {len(jobs)} jobs")
                     
-                    # Move to the next query for the next iteration
-                    self.current_query_index = (self.current_query_index + 1) % len(settings.SEARCH_QUERIES)
+                    # Process new jobs
+                    new_jobs = 0
+                    for job in jobs:
+                        job_id = job.get('id')
+                        if job_id and self.job_tracker.is_new_job(job_id):
+                            await self.process_job(job)
+                            self.job_tracker.mark_job_seen(job_id)
+                            new_jobs += 1
                     
+                    logger.info(f"Processed {new_jobs} new jobs")
+                            
                 except UpworkAuthenticationError:
-                    # Don't retry immediately on auth errors
+                    logger.error("Authentication error. Please check your credentials.")
+                    self.should_exit = True
                     break
                 except Exception as e:
-                    logger.error(f"Unexpected error: {e}", exc_info=True)
+                    logger.error(f"Error in search: {e}", exc_info=True)
                 
-                # Wait before next poll
-                logger.info(f"Waiting {settings.POLLING_INTERVAL} seconds before next check...")
-                for _ in range(settings.POLLING_INTERVAL):
-                    if self.should_exit:
-                        break
-                    await asyncio.sleep(1)
+                # Wait before next search
+                if not self.should_exit:
+                    logger.info(f"Waiting {SEARCH_INTERVAL//60} minutes until next search...")
+                    for _ in range(SEARCH_INTERVAL):
+                        if self.should_exit:
+                            break
+                        await asyncio.sleep(1)
                     
         except Exception as e:
             logger.error(f"An error occurred: {e}", exc_info=True)
