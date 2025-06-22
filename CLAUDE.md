@@ -50,10 +50,17 @@ uv pip install -e .             # Install in development mode
 - Comprehensive error handling with custom exceptions (`UpworkAPIError`, `UpworkAuthenticationError`)
 - Job search with filtering by query, hourly rate, and budget
 
+**AI Analysis (`src/ai/job_analyzer.py`)**
+- `JobAnalyzer`: OpenAI-powered job analysis and scoring
+- Generates job summaries, relevance scores (0-10), and proposal scripts
+- Configurable scoring thresholds for intelligent notifications
+- Uses GPT-4o-mini by default with customizable temperature and tokens
+
 **Notifications (`src/notifications/pushover.py`)**
 - `PushoverNotifier`: Sends rich mobile notifications via Pushover API
 - Multi-device support with HTML formatting and deep linking
-- Configurable priority levels and notification sounds
+- Includes AI insights: scores, summaries, and proposal scripts
+- Dynamic priority levels based on AI score (emergency for 9+ scores)
 
 **Token Management (`src/utils/token_manager.py`)**
 - `TokenManager`: Handles OAuth2 token lifecycle and refresh
@@ -64,8 +71,9 @@ uv pip install -e .             # Install in development mode
 1. **Configuration Loading**: Environment variables → Pydantic settings validation
 2. **Authentication**: OAuth2 token refresh → Upwork API access
 3. **Job Search**: GraphQL query → filtered job results
-4. **Processing**: Deduplication → new job detection → notification
-5. **Persistence**: JSON storage for seen jobs tracking
+4. **Processing**: Deduplication → AI analysis → scoring → selective notification
+5. **AI Analysis**: Job data → OpenAI → summary + score + proposal script
+6. **Persistence**: JSON storage for seen jobs tracking
 
 ### Key Patterns
 
@@ -89,6 +97,7 @@ uv pip install -e .             # Install in development mode
 ```
 main.py                 # Application entry point
 config/settings.py      # Pydantic settings with env loading
+src/ai/                # AI job analysis and scoring
 src/api/               # External API integrations
 src/notifications/     # Push notification services  
 src/utils/             # Utility modules
@@ -111,10 +120,18 @@ tests/                 # Test suite with mocking
 
 ### Job Processing
 - Jobs are deduplicated using persistent storage in `data/seen_jobs.json`
-- Rich job formatting includes client information, budget, and rates
-- Notifications sent only for new jobs matching criteria
+- AI analysis generates summaries, scores (0-10), and proposal scripts
+- Intelligent filtering: only jobs scoring 7+ trigger notifications by default
+- Rich job formatting includes client information, budget, and AI insights
+
+### AI Integration
+- OpenAI GPT-4o-mini model for job analysis and scoring
+- Configurable prompts, temperature (0.3), and token limits (1000)
+- Automatic proposal script generation for high-scoring jobs
+- Dynamic notification priority based on AI score (emergency for 9+)
 
 ### Configuration
 - Search parameters configurable via environment variables
 - Default search: "wordpress" jobs with $30+ hourly rate and $500+ budget
-- Pushover notifications optional but recommended for real-time alerts
+- AI analysis can be disabled with `ENABLE_AI_ANALYSIS=false`
+- Notification threshold adjustable with `MIN_NOTIFICATION_SCORE` (default: 7)

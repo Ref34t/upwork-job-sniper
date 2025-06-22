@@ -23,6 +23,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 from config import settings
 from src.api.upwork_graphql import UpworkGraphQLClient, UpworkAuthenticationError, UpworkAPIError
 from src.notifications import PushoverNotifier
+from src.ai import JobAnalyzer
 
 # Configure logging
 logging.basicConfig(
@@ -139,13 +140,19 @@ class UpworkJobSniper:
         self.upwork = UpworkGraphQLClient()
         self.job_tracker = JobTracker(settings.DATA_DIR)
         self.notifier = PushoverNotifier()
+        self.ai_analyzer = JobAnalyzer() if settings.ENABLE_AI_ANALYSIS else None
         self.setup_signal_handlers()
         
-        # Log notification status
+        # Log component status
         if self.notifier.is_configured():
             logger.info("Pushover notifications are enabled")
         else:
             logger.warning("Pushover notifications are not configured. Set PUSHOVER_API_TOKEN and PUSHOVER_USER_KEY in .env to enable.")
+        
+        if self.ai_analyzer:
+            logger.info(f"AI analysis is enabled using {self.ai_analyzer.model} (min score: {settings.MIN_NOTIFICATION_SCORE})")
+        else:
+            logger.warning("AI analysis is disabled. Set ENABLE_AI_ANALYSIS=true to enable job scoring and summarization.")
     
     def setup_signal_handlers(self):
         """Set up signal handlers for graceful shutdown."""
@@ -217,20 +224,35 @@ class UpworkJobSniper:
         notification_sent = False
         
         try:
-            # TODO: Add job processing logic here
-            # 1. Score the job
-            # 2. Generate summary
-            # 3. Send notification if score is above threshold
+            # AI Analysis
+            job_analysis = None
+            if self.ai_analyzer:
+                logger.debug(f"Analyzing job {job_id} with AI...")
+                job_analysis = self.ai_analyzer.analyze_job(job)
+                
+                if job_analysis:
+                    logger.info(f"Job {job_id} scored {job_analysis.score}/10: {job_analysis.summary[:100]}...")
+                else:
+                    logger.warning(f"AI analysis failed for job {job_id}")
             
-            # Send notification for the new job if notifier is configured
-            if self.notifier.is_configured():
-                notification_sent = self.notifier.send_job_notification(job)
+            # Determine if we should send notification
+            should_notify = True
+            if job_analysis and self.ai_analyzer:
+                should_notify = self.ai_analyzer.should_notify(job_analysis)
+                if not should_notify:
+                    logger.info(f"Job {job_id} score ({job_analysis.score}) below threshold ({settings.MIN_NOTIFICATION_SCORE}), skipping notification")
+            
+            # Send notification if conditions are met
+            if should_notify and self.notifier.is_configured():
+                notification_sent = self.notifier.send_job_notification(job, job_analysis)
                 if notification_sent:
                     logger.info(f"Sent notification for job {job_id}")
                 else:
                     logger.warning(f"Failed to send notification for job {job_id}")
-            else:
+            elif not self.notifier.is_configured():
                 logger.debug(f"Processed job {job_id} (notifications not configured)")
+            else:
+                logger.debug(f"Processed job {job_id} (notification skipped)")
             
         except Exception as e:
             logger.exception(f"Error processing job {job_id}: {e}")

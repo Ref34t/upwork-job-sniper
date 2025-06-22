@@ -294,11 +294,12 @@ class PushoverNotifier:
             logger.warning(f"Failed to clean description: {e}")
             return description[:200] + '...' if len(description) > 200 else description
 
-    def send_job_notification(self, job: Dict[str, Any]) -> bool:
+    def send_job_notification(self, job: Dict[str, Any], job_analysis=None) -> bool:
         """Send a notification for a new job posting.
         
         Args:
             job: Job details dictionary
+            job_analysis: Optional JobAnalysis object with AI insights
             
         Returns:
             bool: True if the notification was sent successfully, False otherwise
@@ -332,29 +333,60 @@ class PushoverNotifier:
             message_parts = [
                 f"📢 <b>{job_title}</b>",
                 "",  # Empty line for better readability
+            ]
+            
+            # Add AI analysis if available
+            if job_analysis:
+                score_emoji = "🔥" if job_analysis.score >= 8 else "⭐" if job_analysis.score >= 6 else "📊"
+                message_parts.extend([
+                    f"{score_emoji} <b>AI Score: {job_analysis.score}/10</b>",
+                    f"📝 {job_analysis.summary}",
+                    ""
+                ])
+            
+            message_parts.extend([
                 f"{budget} • {job_type}",
                 f"{client_info}",
                 f"{posted_time} • {applicants} proposals",
-            ]
+            ])
             
-            # Add job description if available
-            description = self._clean_description(job.get('description'))
-            if description:
-                message_parts.extend(["", description])
+            # Add AI proposal script if available
+            if job_analysis and job_analysis.proposal_script:
+                message_parts.extend([
+                    "",
+                    f"🎬 <b>Proposal Script:</b>",
+                    f"<i>{job_analysis.proposal_script[:300]}{'...' if len(job_analysis.proposal_script) > 300 else ''}</i>"
+                ])
+            else:
+                # Add job description if available and no AI analysis
+                description = self._clean_description(job.get('description'))
+                if description:
+                    message_parts.extend(["", description])
             
             # Add job URL if available
             job_url = None
             if job_id and job_id != 'unknown':
                 job_url = f"https://www.upwork.com/jobs/~02{job_id}"
             
+            # Create notification title with AI score if available
+            if job_analysis:
+                title = f"🚀 New Job Match! ({job_analysis.score}/10)"
+                # Adjust priority and sound based on AI score
+                priority = 2 if job_analysis.score >= 9 else 1  # Emergency priority for 9+ scores
+                sound = "siren" if job_analysis.score >= 9 else "cashregister"
+            else:
+                title = "🚀 New Job Match!"
+                priority = 1
+                sound = "cashregister"
+            
             # Send the notification to all devices
             return self.send_notification(
-                title="🚀 New Job Match!",
+                title=title,
                 message="\n".join(message_parts),
                 url=job_url,
                 url_title="🔍 View on Upwork" if job_url else None,
-                priority=1,  # High priority
-                sound="cashregister",  # Fun cash register sound for new jobs
+                priority=priority,
+                sound=sound,
                 html=1,  # Enable HTML formatting
                 retry=30,  # Retry every 30 seconds if not acknowledged
                 expire=300  # Stop retrying after 5 minutes

@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     
     # OpenAI API settings
     OPENAI_API_KEY: SecretStr
+    OPENAI_MODEL: str = Field(default="gpt-4o-mini")
+    OPENAI_TEMPERATURE: float = Field(default=0.3)
+    OPENAI_MAX_TOKENS: int = Field(default=1000)
     
     # Pushover settings
     PUSHOVER_API_TOKEN: Optional[str] = None
@@ -40,6 +43,10 @@ class Settings(BaseSettings):
     HOURLY_RATE_MIN: int = 30
     BUDGET_MIN: int = 500
     SEARCH_LIMIT: int = 10
+    
+    # AI analysis settings
+    ENABLE_AI_ANALYSIS: bool = Field(default=True)
+    MIN_NOTIFICATION_SCORE: int = Field(default=7)
     
     # File paths
     BASE_DIR: Path = Path(__file__).parent.parent
