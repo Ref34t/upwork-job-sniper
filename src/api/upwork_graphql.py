@@ -1,23 +1,24 @@
-"""Upwork GraphQL API client implementation."""
+"""Upwork GraphQL API client implementation with token management."""
 from __future__ import annotations
 
 import logging
-import os
-from typing import Any, Dict, List, Optional, Union
-import json
+import time
+from typing import Any, Dict, List, Optional, Tuple
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-# Import settings from the config package
+# Import settings and token manager
 try:
     from config.settings import settings
+    from src.utils.token_manager import TokenManager
 except ImportError:
     # Fallback for direct script execution
     import sys
     from pathlib import Path
     sys.path.append(str(Path(__file__).parent.parent.parent))
     from config.settings import settings
+    from src.utils.token_manager import TokenManager
 
 logger = logging.getLogger(__name__)
 
@@ -34,17 +35,38 @@ class UpworkGraphQLClient:
 
     def __init__(self):
         """Initialize the Upwork GraphQL client with OAuth2 authentication."""
-        from config import settings
-        
-        self.access_token = settings.UPWORK_ACCESS_TOKEN
-        if not self.access_token:
-            raise ValueError("UPWORK_ACCESS_TOKEN is not set in settings")
-            
+        self.token_manager = TokenManager()
         self.endpoint = settings.UPWORK_GRAPHQL_ENDPOINT
         self.session = self._create_session()
+        self._last_token_refresh = 0
+        self._token_refresh_interval = 3000  # 50 minutes in seconds
         
         # Log initialization (for debugging)
         logger.info("UpworkGraphQLClient initialized with endpoint: %s", self.endpoint)
+    
+    def _ensure_valid_token(self) -> None:
+        """Ensure the current access token is valid, refresh if needed."""
+        current_time = time.time()
+        
+        # Only attempt to refresh if enough time has passed since last refresh
+        if current_time - self._last_token_refresh < self._token_refresh_interval:
+            return
+        
+        try:
+            success, message = self.token_manager.refresh_access_token()
+            if success:
+                logger.info("Successfully refreshed access token")
+                self._last_token_refresh = current_time
+            else:
+                logger.warning("Failed to refresh access token: %s", message)
+        except Exception as e:
+            logger.error("Error refreshing access token: %s", str(e), exc_info=True)
+    
+    @property
+    def access_token(self) -> str:
+        """Get the current access token, refreshing if needed."""
+        self._ensure_valid_token()
+        return self.token_manager.get_access_token()
         
     def _create_session(self):
         """Create a requests session with retry logic."""
@@ -59,7 +81,7 @@ class UpworkGraphQLClient:
         return session
         
     def _get_headers(self) -> Dict[str, str]:
-        """Get the headers for API requests."""
+        """Get the headers for API requests with the current access token."""
         return {
             "Authorization": f"Bearer {self.access_token}",
             "Content-Type": "application/json",
@@ -126,128 +148,134 @@ class UpworkGraphQLClient:
         result = self.execute_query(query)
         return result.get('data', {}).get('organization', {})
         
-    def search_jobs(self, query: str, hourly_rate_min: int = 30, limit: int = 10) -> List[Dict]:
-        """Search for jobs on Upwork using the GraphQL API.
+    def search_jobs(
+        self,
+        query: str = "wordpress",
+        hourly_rate_min: int = 30,
+        budget_min: int = 500,
+        limit: int = 10
+    ) -> List[Dict[str, Any]]:
+        """
+        Search for jobs matching the given criteria.
         
         Args:
-            query: Search query string (e.g., "wordpress")
-            hourly_rate_min: Minimum hourly rate to filter by (default: 30)
-            limit: Maximum number of results to return (default: 10, max: 100)
+            query: Search query string (default: "wordpress")
+            hourly_rate_min: Minimum hourly rate (default: 30)
+            budget_min: Minimum project budget (default: 500)
+            limit: Maximum number of results to return (default: 10)
             
         Returns:
-            List of job postings
-            
-        Raises:
-            UpworkAPIError: If there's an error with the API request
+            List of job dictionaries
         """
-        graphql_query = """
-        query SearchJobs($filter: MarketPlaceJobFilterInput!, $searchType: MarketPlaceJobSearchType!, $sort: [MarketPlaceJobSortInput!]) {
-          marketplaceJobPostingsSearch(
-            marketPlaceJobFilter: $filter
-            searchType: $searchType
-            sortAttributes: $sort
-          ) {
-            edges {
-              node {
-                id
-                title
-                description
-                hourlyBudgetMin {
-                  displayValue
-                }
-                hourlyBudgetMax {
-                  displayValue
-                }
-                createdDateTime
-                duration
-                experienceLevel
-                amount {
-                  displayValue
-                }
-                client {
-                  totalReviews
-                  totalFeedback
-                  verificationStatus
-                  totalPostedJobs
-                  totalHires
-                  totalSpent {
-                    displayValue
-                  }
-                }
-                totalApplicants
-              }
-            }
-          }
-        }
-        """
-        
-        variables = {
-            "filter": {
-                "titleExpression": {"eq": query},
-                "hourlyRateMin": {"gte": hourly_rate_min}
-            },
-            "limit": min(limit, 100),  # Ensure we don't exceed API limits
-            "searchType": "USER_JOBS_SEARCH",
-            "sort": [{"field": "RECENCY"}]
-        }
-        
         try:
-            logger.info(f"Searching for jobs with query: {query}, min rate: ${hourly_rate_min}/hr")
-            result = self._execute_query(graphql_query, variables)
+            # Ensure we have a valid token before making the request
+            self._ensure_valid_token()
             
-            # Handle empty or malformed response
-            if not result or 'data' not in result:
-                logger.warning("Unexpected response format from API")
-                return []
-                
-            search_result = result.get('data', {}).get('marketplaceJobPostingsSearch', {})
-            edges = search_result.get('edges', [])
+            # Build the GraphQL query
+            query_str = """
+            query GetJobs($query: String!, $filters: JobSearchFilters, $paging: Paging) {
+                jobs(
+                    query: $query,
+                    filters: $filters,
+                    paging: $paging
+                ) {
+                    nodes {
+                        id
+                        title
+                        description
+                        createdDateTime
+                        skills {
+                            name
+                        }
+                        client {
+                            name
+                            location {
+                                country
+                            }
+                        }
+                        amount {
+                            amount
+                            currency
+                            type
+                        }
+                        duration
+                        workload
+                        status
+                    }
+                }
+            }
+            """
             
-            logger.info(f"Found {len(edges)} jobs matching the criteria")
-            return [edge['node'] for edge in edges if 'node' in edge]
+            variables = {
+                "query": query,
+                "filters": {
+                    "hourlyRate": {"min": hourly_rate_min},
+                    "budget": {"min": budget_min},
+                    "jobType": "hourly,fixed"
+                },
+                "paging": {
+                    "first": limit
+                }
+            }
+            
+            # Execute the query
+            response = self._execute_query(query_str, variables)
+            
+            # Process the response
+            jobs = response.get('data', {}).get('jobs', {}).get('nodes', [])
+            
+            # Sort jobs by creation date in descending order (newest first)
+            jobs.sort(key=lambda x: x.get('createdDateTime', ''), reverse=True)
+            
+            logger.info(f"Found {len(jobs)} jobs matching the criteria")
+            return jobs
             
         except UpworkAuthenticationError as e:
             logger.error(f"Authentication error while searching jobs: {e}")
             raise
-        except UpworkAPIError as e:
-            logger.error(f"API error while searching jobs: {e}")
-            raise
         except Exception as e:
-            logger.exception("Unexpected error while searching jobs")
+            logger.exception("Error while searching jobs")
             raise UpworkAPIError(f"Failed to search jobs: {str(e)}") from e
 
-    def _execute_query(self, query: str, variables: Optional[Dict] = None) -> Dict:
-        """Execute a GraphQL query using the Upwork API.
+    def _execute_query(self, query: str, variables: Optional[Dict] = None, retry_on_auth: bool = True) -> Dict:
+        """Execute a GraphQL query using the Upwork API with automatic token refresh.
         
         Args:
             query: The GraphQL query string
             variables: Optional variables for the query
+            retry_on_auth: Whether to retry once on authentication error
             
         Returns:
             The parsed JSON response
             
         Raises:
-            UpworkAuthenticationError: If authentication fails
+            UpworkAuthenticationError: If authentication fails after retry
             UpworkAPIError: For other API errors
         """
-        # Prepare the request data
-        data = {
-            "query": query,
-            "variables": variables or {}
-        }
-        
         try:
+            # Ensure we have a valid token before making the request
+            self._ensure_valid_token()
+            
             # Make the POST request to the GraphQL endpoint using the session
             response = self.session.post(
                 self.endpoint,
                 headers=self._get_headers(),
-                json=data,
+                json={
+                    "query": query,
+                    "variables": variables or {}
+                },
                 timeout=30
             )
             
-            # Check for authentication errors
+            # Handle authentication errors
             if response.status_code == 401:
-                raise UpworkAuthenticationError("Invalid or expired access token")
+                if retry_on_auth:
+                    logger.info("Received 401, attempting to refresh token...")
+                    success, message = self.token_manager.refresh_access_token()
+                    if success:
+                        logger.info("Token refreshed, retrying request...")
+                        return self._execute_query(query, variables, retry_on_auth=False)
+                raise UpworkAuthenticationError("Authentication failed after token refresh")
                 
             # Check for other HTTP errors
             response.raise_for_status()
@@ -259,18 +287,34 @@ class UpworkGraphQLClient:
             if "errors" in response_data:
                 error_messages = [e.get("message", "Unknown error") 
                                for e in response_data.get("errors", [])]
-                raise UpworkAPIError(f"GraphQL errors: {', '.join(error_messages)}")
+                error_message = ", ".join(error_messages)
+                
+                # Handle token expiration in GraphQL errors
+                if any("token" in msg.lower() and "expired" in msg.lower() for msg in error_messages) and retry_on_auth:
+                    logger.info("Token expired, attempting to refresh...")
+                    success, message = self.token_manager.refresh_access_token()
+                    if success:
+                        logger.info("Token refreshed, retrying request...")
+                        return self._execute_query(query, variables, retry_on_auth=False)
+                
+                raise UpworkAPIError(f"GraphQL errors: {error_message}")
                 
             return response_data
             
         except requests.exceptions.RequestException as e:
-            logger.error(f"Request failed: {e}")
+            error_msg = str(e)
+            logger.error(f"Request failed: {error_msg}")
+            
+            # Add more detailed error information if available
             if hasattr(e, 'response') and e.response is not None:
                 try:
-                    logger.error(f"Response content: {e.response.text}")
-                except:
-                    pass
-            raise UpworkAPIError(f"API request failed: {e}") from e
+                    error_detail = e.response.text
+                    logger.error(f"Response content: {error_detail}")
+                    error_msg = f"{error_msg} - {error_detail}"
+                except Exception as parse_error:
+                    logger.error("Failed to parse error response", exc_info=parse_error)
+            
+            raise UpworkAPIError(f"API request failed: {error_msg}") from e
 
     # Removed duplicate search_jobs method to use the GraphQL implementation
     

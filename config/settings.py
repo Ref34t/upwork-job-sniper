@@ -33,8 +33,13 @@ class Settings(BaseSettings):
     PUSHOVER_USER_KEY: Optional[str] = None
     
     # Application settings
-    POLLING_INTERVAL: int = 300  # 5 minutes in seconds
     MAX_RETRIES: int = 3
+    
+    # Search parameters
+    SEARCH_QUERY: str = "wordpress"
+    HOURLY_RATE_MIN: int = 30
+    BUDGET_MIN: int = 500
+    SEARCH_LIMIT: int = 10
     
     # File paths
     BASE_DIR: Path = Path(__file__).parent.parent
